@@ -934,6 +934,11 @@ private:
 
 	void OnSaveCodeNetMessage(const CNetMsg_Sv_SaveCode *pMsg);
 	void StoreSave(const char *pTeamMembers, const char *pGeneratedCode) const;
+
+	// ddnet-vila
+
+public:
+	bool CheckNewInput() override;
 };
 
 ColorRGBA CalculateNameColor(ColorHSLA TextColorHSL);
