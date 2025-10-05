@@ -5086,7 +5086,6 @@ bool CGameClient::CheckNewInput()
 
 void CGameClient::OnNewSnapshotEx()
 {
-	
 	auto &&Evolve = [this](CNetObj_Character *pCharacter, int Tick) {
 		CWorldCore TempWorld;
 		CCharacterCore TempCore = CCharacterCore();
@@ -5591,7 +5590,7 @@ void CGameClient::OnNewSnapshotEx()
 				m_Snap.m_apInfoByDDTeamName[Index++] = m_Snap.m_apInfoByName[i];
 		}
 	}
-	
+
 	// sort player infos by game team (and name between)
 	Index = 0;
 	for(int Team = TEAM_RED; Team <= TEAM_BLUE; ++Team)

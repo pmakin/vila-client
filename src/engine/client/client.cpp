@@ -5346,7 +5346,6 @@ void CClient::SetLoggers(std::shared_ptr<ILogger> &&pFileLogger, std::shared_ptr
 	m_pStdoutLogger = pStdoutLogger;
 }
 
-
 // ddnet-vila
 void CClient::SendVila(int Conn)
 {
@@ -5362,4 +5361,3 @@ void CClient::SendVila(int Conn)
 	Msg.AddString(aBuf, 0);
 	SendMsg(Conn, &Msg, MSGFLAG_VITAL);
 }
-
