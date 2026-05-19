@@ -636,6 +636,7 @@ void CGameClient::OnReset()
 
 	m_GameOver = false;
 	m_GamePaused = false;
+	m_PrevLocalId = -1;
 
 	m_SuppressEvents = false;
 	m_NewTick = false;
@@ -691,6 +692,7 @@ void CGameClient::OnReset()
 	std::fill(std::begin(m_aEnableSpectatorCount), std::end(m_aEnableSpectatorCount), -1);
 	std::fill(std::begin(m_aLastUpdateTick), std::end(m_aLastUpdateTick), 0);
 
+	m_PredictedDummyId = -1;
 	m_IsDummySwapping = false;
 	m_CharOrder.Reset();
 	std::fill(std::begin(m_aSwitchStateTeam), std::end(m_aSwitchStateTeam), -1);
@@ -929,6 +931,7 @@ void CGameClient::OnDummyDisconnect()
 	m_aShowOthers[1] = SHOW_OTHERS_NOT_SET;
 	m_aEnableSpectatorCount[1] = -1;
 	m_aLastNewPredictedTick[1] = -1;
+	m_PredictedDummyId = -1;
 }
 
 int CGameClient::LastRaceTick() const
@@ -2412,6 +2415,10 @@ void CGameClient::OnNewSnapshot()
 		m_LastRaceTick = RaceFlag ? -m_Snap.m_pGameInfoObj->m_WarmupTimer : -1;
 	}
 
+	if(m_Snap.m_LocalClientId != m_PrevLocalId)
+		m_PredictedDummyId = m_PrevLocalId;
+	m_PrevLocalId = m_Snap.m_LocalClientId;
+
 	SnapCollectEntities(); // creates a collection that associates EntityEx snap items with the entities they belong to
 
 	UpdateLocalTuning();
@@ -2579,7 +2586,7 @@ void CGameClient::OnPredict()
 		return;
 	CCharacter *pDummyChar = nullptr;
 	if(PredictDummy())
-		pDummyChar = m_PredictedWorld.GetCharacterById(m_aLocalIds[!g_Config.m_ClDummy]);
+		pDummyChar = m_PredictedWorld.GetCharacterById(m_PredictedDummyId);
 
 	// predict
 	int FinalTickRegular = Client()->PredGameTick(g_Config.m_ClDummy); // The vanilla final tick disregarding fast input
@@ -3455,7 +3462,7 @@ void CGameClient::UpdatePrediction()
 	CCharacter *pLocalChar = m_GameWorld.GetCharacterById(m_Snap.m_LocalClientId);
 	CCharacter *pDummyChar = nullptr;
 	if(PredictDummy())
-		pDummyChar = m_GameWorld.GetCharacterById(m_aLocalIds[!g_Config.m_ClDummy]);
+		pDummyChar = m_GameWorld.GetCharacterById(m_PredictedDummyId);
 
 	// update strong and weak hook
 	if(pLocalChar && !m_Snap.m_SpecInfo.m_Active && Client()->State() != IClient::STATE_DEMOPLAYBACK && (m_aTuning[g_Config.m_ClDummy].m_PlayerCollision || m_aTuning[g_Config.m_ClDummy].m_PlayerHooking))
@@ -3546,7 +3553,7 @@ void CGameClient::UpdatePrediction()
 	for(int i = 0; i < MAX_CLIENTS; i++)
 		if(m_Snap.m_aCharacters[i].m_Active)
 		{
-			bool IsLocal = (i == m_Snap.m_LocalClientId || (PredictDummy() && i == m_aLocalIds[!g_Config.m_ClDummy]));
+			bool IsLocal = (i == m_Snap.m_LocalClientId || (PredictDummy() && i == m_PredictedDummyId));
 			int GameTeam = IsTeamPlay() ? m_aClients[i].m_Team : i;
 			m_GameWorld.NetCharAdd(i, &m_Snap.m_aCharacters[i].m_Cur,
 				m_Snap.m_aCharacters[i].m_HasExtendedData ? &m_Snap.m_aCharacters[i].m_ExtendedData : nullptr,
@@ -5551,7 +5558,6 @@ void CGameClient::OnNewSnapshotEx()
 				m_Snap.m_SpecInfo.m_Zoom = pDDNetSpecInfo->m_Zoom / 1000.0f;
 				m_Snap.m_SpecInfo.m_Deadzone = pDDNetSpecInfo->m_Deadzone;
 				m_Snap.m_SpecInfo.m_FollowFactor = pDDNetSpecInfo->m_FollowFactor;
-				m_Snap.m_SpecInfo.m_SpectatorCount = pDDNetSpecInfo->m_SpectatorCount;
 			}
 			else if(Item.m_Type == NETOBJTYPE_GAMEINFO)
 			{
@@ -5982,7 +5988,7 @@ void CGameClient::OnNewSnapshotEx()
 				float Alpha = 1.0f;
 				if(IsOtherTeam(i))
 					Alpha = g_Config.m_ClShowOthersAlpha / 100.0f;
-				m_Effects.AirJump(Pos, Alpha);
+				m_Effects.AirJump(Pos, Alpha, 1.0f);
 			}
 
 	if(g_Config.m_ClFreezeStars && !m_SuppressEvents)

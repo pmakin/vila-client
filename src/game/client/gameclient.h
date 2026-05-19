@@ -269,6 +269,7 @@ private:
 	// only used in OnNewSnapshot
 	bool m_GameOver = false;
 	bool m_GamePaused = false;
+	int m_PrevLocalId = -1;
 
 public:
 	IKernel *Kernel() { return IInterface::Kernel(); }
@@ -923,6 +924,7 @@ private:
 
 	vec2 GetSmoothPos(int ClientId);
 
+	int m_PredictedDummyId;
 	int m_IsDummySwapping;
 	CCharOrder m_CharOrder;
 	int m_aSwitchStateTeam[NUM_DUMMIES];
