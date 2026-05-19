@@ -76,9 +76,7 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.18)
   include(CheckLinkerFlag)
 endif()
 include(CheckSymbolExists)
-if(NOT (TARGET_OS STREQUAL "emscripten"))
-  include(CheckAtomic)
-endif()
+include(CheckAtomic)
 
 check_symbol_exists(__i386 "" TARGET_ARCH_X86_i386)
 if(TARGET_ARCH_X86_i386)
@@ -92,9 +90,7 @@ set(AUTO_DEPENDENCIES_DEFAULT OFF)
 set(AUTO_VULKAN_BACKEND ON)
 if(TARGET_OS STREQUAL "windows")
   set(AUTO_DEPENDENCIES_DEFAULT ON)
-  if(TARGET_CPU_ARCHITECTURE STREQUAL "x86")
-    set(AUTO_VULKAN_BACKEND OFF)
-  endif()
+  set(AUTO_VULKAN_BACKEND OFF)
 elseif(TARGET_OS STREQUAL "mac")
   set(AUTO_VULKAN_BACKEND OFF)
 endif()
@@ -123,6 +119,16 @@ option(EXCEPTION_HANDLING "Enable crashdumps (only works with Windows)" OFF)
 option(IPO "Enable interprocedural optimizations" OFF)
 option(FUSE_LD "Linker to use" OFF)
 option(SECURITY_COMPILER_FLAGS "Whether to set security-relevant compiler flags like -D_FORTIFY_SOURCE=2 and -fstack-protector-strong" ON)
+option(MACOS_CODESIGN "Whether to sign code when building the DMG on macOS" OFF)
+set(EXTERNAL_STEAM_API_DYLIB "" CACHE FILEPATH "Path to an external libsteam_api.dylib to package instead of the built stub")
+
+if(EXTERNAL_STEAM_API_DYLIB AND NOT EXISTS "${EXTERNAL_STEAM_API_DYLIB}")
+  message(FATAL_ERROR "EXTERNAL_STEAM_API_DYLIB does not exist: ${EXTERNAL_STEAM_API_DYLIB}")
+endif()
+
+if(TARGET_OS STREQUAL "mac" AND DEFINED ENV{MACOS_APP_IDENTITY})
+  set(MACOS_APP_IDENTITY "$ENV{MACOS_APP_IDENTITY}")
+endif()
 
 if(TARGET_OS STREQUAL "emscripten")
   include(${PROJECT_SOURCE_DIR}/cmake/toolchains/Emscripten.toolchain)
@@ -305,6 +311,12 @@ if(NOT MSVC AND NOT HAIKU)
     add_cxx_compiler_flag_if_supported(OUR_FLAGS_LINK -Wl,--no-insert-timestamp)
   endif()
 
+  if(NOT CMAKE_BUILD_TYPE STREQUAL Debug AND NOT DEV)
+    add_cxx_compiler_flag_if_supported(OUR_FLAGS -ffile-prefix-map=${CMAKE_SOURCE_DIR}=/${CMAKE_PROJECT_NAME})
+    add_cxx_compiler_flag_if_supported(OUR_FLAGS -ffile-prefix-map=${PROJECT_BINARY_DIR}=/${CMAKE_PROJECT_NAME})
+    add_cxx_compiler_flag_if_supported(OUR_FLAGS -fno-ident)
+  endif()
+
   if(TARGET_OS STREQUAL "mac")
     add_cxx_compiler_flag_if_supported(OUR_FLAGS -stdlib=libc++)
   endif()
@@ -339,7 +351,6 @@ if(NOT MSVC AND NOT HAIKU)
   add_cxx_compiler_flag_if_supported(OUR_FLAGS_OWN -Wsuggest-override)
   add_cxx_compiler_flag_if_supported(OUR_FLAGS_OWN -Wdynamic-class-memaccess) # clang
   add_cxx_compiler_flag_if_supported(OUR_FLAGS_OWN -Wclass-memaccess) # gcc
-  add_cxx_compiler_flag_if_supported(OUR_FLAGS_OWN -Wno-deprecated-enum-float-conversion) # c++20 arithmetic between floating-point type and enumeration type
   add_linker_flag_if_supported(OUR_FLAGS_LINK -Wno-alloc-size-larger-than) # save.cpp with LTO
   # add_cxx_compiler_flag_if_supported(OUR_FLAGS_OWN -Wdouble-promotion) # Many occurrences
   # add_cxx_compiler_flag_if_supported(OUR_FLAGS_OWN -Wnull-dereference) # Many occurrences
@@ -554,6 +565,7 @@ endif()
 if(TARGET_OS AND TARGET_OS STREQUAL "mac")
   find_program(CMAKE_OTOOL otool)
   find_program(DMGBUILD dmgbuild)
+  set(DMGBUILD_FOUND ${DMGBUILD})
 endif()
 
 set(VULKAN_SHADER_FILE_LIST "" CACHE STRING "Vulkan shader file list")
@@ -590,9 +602,6 @@ function(show_dependency_status OUTPUT_NAME NAME)
 endfunction()
 
 show_dependency_status("Curl" CURL)
-if(TARGET_OS AND TARGET_OS STREQUAL "mac")
-  show_dependency_status("Dmg tools" DMGTOOLS)
-endif()
 if(CLIENT AND VIDEORECORDER)
   show_dependency_status("FFmpeg" FFMPEG)
 endif()
@@ -686,7 +695,7 @@ if(CLIENT AND NOT(SDL2_FOUND))
   message(SEND_ERROR "You must install SDL2 to compile the ${CMAKE_PROJECT_NAME} client")
 endif()
 if(TARGET_OS STREQUAL "android" AND NOT(CRYPTO_FOUND))
-  message(SEND_ERROR "You must install OpenSSL to compile ${CMAKE_PROJECT_NAME}")
+  message(SEND_ERROR "You must install BoringSSL to compile ${CMAKE_PROJECT_NAME} for Android")
 endif()
 if(NOT(GTEST_FOUND))
   if(DOWNLOAD_GTEST)
@@ -710,7 +719,8 @@ if(TARGET_OS STREQUAL "windows")
   set(PLATFORM_CLIENT_LIBS opengl32.lib winmm.lib imm32.lib)
   set(PLATFORM_LIBS)
   list(APPEND PLATFORM_LIBS shlwapi.lib) # PathIsRelativeW
-  list(APPEND PLATFORM_LIBS version ws2_32.lib) # Windows sockets
+  list(APPEND PLATFORM_LIBS version.lib) # GetFileVersionInfoSizeW
+  list(APPEND PLATFORM_LIBS ws2_32.lib) # Windows sockets
   list(APPEND PLATFORM_LIBS advapi32.lib) # Reg* and Crypt* functions
   list(APPEND PLATFORM_LIBS bcrypt.lib userenv.lib) # for Rust (https://github.com/rust-lang/rust/issues/91974)
   list(APPEND PLATFORM_LIBS ole32.lib) # CoInitialize(Ex)
@@ -876,12 +886,12 @@ list(APPEND TARGETS_OWN rust-bridge-shared)
 
 if(TARGET_OS STREQUAL "android")
   set(CARGO_BUILD_DIR "${CARGO_NDK_TARGET}/")
-  set(CARGO_BUILD ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} DDNET_TEST_NO_LINK=1 ${RUST_CARGO} ndk --manifest-path "${PROJECT_SOURCE_DIR}/Cargo.toml" --target ${CARGO_NDK_TARGET} --platform ${CARGO_NDK_API} build)
-  set(CARGO_TEST ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} ${RUST_CARGO} ndk --target ${CARGO_NDK_TARGET} --platform ${CARGO_NDK_API} test)
+  set(CARGO_BUILD ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} DDNET_TEST_NO_LINK=1 ${RUST_CARGO} ndk --manifest-path "${PROJECT_SOURCE_DIR}/Cargo.toml" --target ${CARGO_NDK_TARGET} --platform ${CARGO_NDK_API} build --locked)
+  set(CARGO_TEST ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} ${RUST_CARGO} ndk --target ${CARGO_NDK_TARGET} --platform ${CARGO_NDK_API} test --locked)
 else()
   set(CARGO_BUILD_DIR "")
-  set(CARGO_BUILD ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} DDNET_TEST_NO_LINK=1 ${RUST_CARGO} build --manifest-path "${PROJECT_SOURCE_DIR}/Cargo.toml")
-  set(CARGO_TEST ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} ${RUST_CARGO} test)
+  set(CARGO_BUILD ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} DDNET_TEST_NO_LINK=1 ${RUST_CARGO} build --locked --manifest-path "${PROJECT_SOURCE_DIR}/Cargo.toml")
+  set(CARGO_TEST ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} ${RUST_CARGO} test --locked)
 endif()
 if(MSVC)
   list(INSERT CARGO_BUILD 0 ${CMAKE_COMMAND} -E env $<$<CONFIG:Debug>:CFLAGS=/MTd> $<$<CONFIG:Debug>:CXXFLAGS=/MTd>)
@@ -1508,6 +1518,7 @@ set(EXPECTED_DATA
   mapres/desert_mountains_new_background.png
   mapres/desert_mountains_new_foreground.png
   mapres/desert_sun.png
+  mapres/easter_0.7.png
   mapres/entities.png
   mapres/fadeout.png
   mapres/font_teeworlds.png
@@ -1883,6 +1894,9 @@ set(COPY_FILES
   ${CRASHDUMP_COPY_FILES}
   ${SSP_COPY_FILES}
 )
+if(TARGET_OS STREQUAL "emscripten")
+  list(APPEND COPY_FILES other/emscripten/index.html)
+endif()
 file(COPY ${COPY_FILES} DESTINATION .)
 
 set(COPY_DIRS ${SDL2_COPY_DIRS})
@@ -1973,7 +1987,7 @@ generate_source7("src/generated/client_data7.cpp" "client_content_source")
 generate_source7("src/generated/client_data7.h" "client_content_header")
 
 generate_maps("src/generated/protocolglue.h" "map_header")
-generate_maps("src/generated/protocolglue.cpp" "map_source")
+generate_maps("src/generated/protocolglue_generated.cpp" "map_source")
 
 add_custom_command(OUTPUT "src/generated/wordlist.h"
   COMMAND ${Python3_EXECUTABLE} scripts/wordlist.py > ${PROJECT_BINARY_DIR}/src/generated/wordlist.h
@@ -1982,17 +1996,31 @@ add_custom_command(OUTPUT "src/generated/wordlist.h"
     scripts/wordlist.py
 )
 
+add_custom_target(generate_protocol
+  DEPENDS
+    src/generated/protocol.h
+    src/generated/protocol7.h
+    src/generated/protocolglue.h
+)
+
 ########################################################################
 # SHARED
 ########################################################################
 
 # Sources
 set_src(BASE GLOB_RECURSE src/base
+  aio.cpp
+  aio.h
   bezier.cpp
   bezier.h
+  bytes.cpp
+  bytes.h
   color.cpp
   color.h
   crashdump.cpp
+  crashdump.h
+  dbg.cpp
+  dbg.h
   detect.h
   dynamic.h
   fs.cpp
@@ -2003,17 +2031,33 @@ set_src(BASE GLOB_RECURSE src/base
   hash_ctxt.h
   hash_libtomcrypt.cpp
   hash_openssl.cpp
+  io.cpp
+  io.h
   lock.h
   log.cpp
   log.h
   logger.h
   math.h
+  mem.cpp
+  mem.h
+  net.cpp
+  net.h
+  os.cpp
+  os.h
+  process.cpp
+  process.h
   rust.h
+  secure.cpp
+  secure.h
+  sphore.cpp
+  sphore.h
   str.cpp
   str.h
-  system.cpp
   system.h
-  tl/threading.h
+  thread.cpp
+  thread.h
+  time.cpp
+  time.h
   types.h
   unicode/confusables.cpp
   unicode/confusables.h
@@ -2022,6 +2066,8 @@ set_src(BASE GLOB_RECURSE src/base
   unicode/tolower_data.cpp
   unicode/tolower_data.h
   vmath.h
+  windows.cpp
+  windows.h
 )
 set_src(ENGINE_INTERFACE GLOB src/engine
   antibot.h
@@ -2033,6 +2079,7 @@ set_src(ENGINE_INTERFACE GLOB src/engine
   editor.h
   engine.h
   favorites.h
+  font_icons.h
   friends.h
   ghost.h
   graphics.cpp
@@ -2184,7 +2231,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "src/game/version
 # A bit hacky, but these are needed to register all the UUIDs, even for stuff
 # that doesn't link game.
 set(ENGINE_UUID_SHARED
-  src/generated/protocolglue.cpp
+  src/generated/protocolglue_generated.cpp
   src/generated/protocolglue.h
   src/generated/protocol7.cpp
   src/generated/protocol7.h
@@ -2227,6 +2274,8 @@ add_library(engine-gfx EXCLUDE_FROM_ALL OBJECT ${ENGINE_GFX})
 target_include_directories(engine-gfx PRIVATE ${PNG_INCLUDE_DIRS})
 add_library(engine-shared EXCLUDE_FROM_ALL OBJECT ${ENGINE_INTERFACE} ${ENGINE_SHARED} ${ENGINE_UUID_SHARED} ${BASE})
 add_library(game-shared EXCLUDE_FROM_ALL OBJECT ${GAME_SHARED} ${GAME_GENERATED_SHARED})
+add_dependencies(engine-shared generate_protocol)
+add_dependencies(game-shared generate_protocol)
 list(APPEND TARGETS_OWN engine-gfx engine-shared game-shared)
 
 if(DISCORD AND NOT DISCORD_DYNAMIC)
@@ -2361,6 +2410,8 @@ if(CLIENT)
     components/effects.h
     components/emoticon.cpp
     components/emoticon.h
+    components/envelope_state.cpp
+    components/envelope_state.h
     components/flow.cpp
     components/flow.h
     components/freezebars.cpp
@@ -2369,6 +2420,8 @@ if(CLIENT)
     components/ghost.h
     components/hud.cpp
     components/hud.h
+    components/important_alert.cpp
+    components/important_alert.h
     components/infomessages.cpp
     components/infomessages.h
     components/items.cpp
@@ -2505,6 +2558,8 @@ if(CLIENT)
     layer_selector.h
     map_grid.cpp
     map_grid.h
+    map_object.cpp
+    map_object.h
     map_view.cpp
     map_view.h
     mapitems.h
@@ -2512,6 +2567,7 @@ if(CLIENT)
     mapitems/envelope.h
     mapitems/image.cpp
     mapitems/image.h
+    mapitems/layer.cpp
     mapitems/layer.h
     mapitems/layer_front.cpp
     mapitems/layer_front.h
@@ -2543,8 +2599,8 @@ if(CLIENT)
     prompt.h
     proof_mode.cpp
     proof_mode.h
-    quadart.cpp
-    quadart.h
+    quad_art.cpp
+    quad_art.h
     quick_action.h
     quick_actions.cpp
     quick_actions.h
@@ -2552,7 +2608,7 @@ if(CLIENT)
     references.h
     smooth_value.cpp
     smooth_value.h
-    tileart.cpp
+    tile_art.cpp
   )
   set_src(GAME_MAP GLOB_RECURSE src/game/map
     envelope_extrema.cpp
@@ -2792,8 +2848,8 @@ if(SERVER)
     gamecontext.h
     gamecontroller.cpp
     gamecontroller.h
-    gamemodes/DDRace.cpp
-    gamemodes/DDRace.h
+    gamemodes/ddnet.cpp
+    gamemodes/ddnet.h
     gamemodes/mod.cpp
     gamemodes/mod.h
     gameworld.cpp
@@ -3022,53 +3078,55 @@ add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/src/generated/checksum.cpp
 
 if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   set_src(TESTS GLOB src/test
-    aio.cpp
-    bezier.cpp
-    blocklist_driver.cpp
-    bytes_be.cpp
-    chunk_header.cpp
-    color.cpp
-    compression.cpp
-    csv.cpp
-    datafile.cpp
-    editor.cpp
-    fs.cpp
-    gameworld.cpp
-    git_revision.cpp
-    hash.cpp
-    huffman.cpp
-    io.cpp
-    jobs.cpp
-    json.cpp
-    jsonwriter.cpp
-    linereader.cpp
-    mapbugs.cpp
-    mapitems.cpp
-    math.cpp
-    memory.cpp
-    name_ban.cpp
-    net.cpp
-    netaddr.cpp
-    os.cpp
-    packer.cpp
-    prng.cpp
-    score.cpp
-    secure_random.cpp
-    serverbrowser.cpp
-    serverinfo.cpp
-    shell_execute.cpp
-    snapshot.cpp
-    str.cpp
-    strip_path_and_extension.cpp
-    swap_endian.cpp
-    teehistorian.cpp
+    aio_test.cpp
+    bezier_test.cpp
+    blocklist_driver_test.cpp
+    bytes_be_test.cpp
+    chunk_header_test.cpp
+    color_test.cpp
+    compression_test.cpp
+    csv_test.cpp
+    datafile_test.cpp
+    editor_test.cpp
+    fs_test.cpp
+    gameworld_test.cpp
+    git_revision_test.cpp
+    hash_test.cpp
+    huffman_test.cpp
+    io_test.cpp
+    jobs_test.cpp
+    json_test.cpp
+    jsonwriter_test.cpp
+    linereader_test.cpp
+    mapbugs_test.cpp
+    mapitems_test.cpp
+    math_test.cpp
+    mem_test.cpp
+    name_ban_test.cpp
+    net_test.cpp
+    netaddr_test.cpp
+    os_test.cpp
+    packer_test.cpp
+    prng_test.cpp
+    score_test.cpp
+    secure_random_test.cpp
+    server_test.cpp
+    serverbrowser_test.cpp
+    serverinfo_test.cpp
+    snapshot_test.cpp
+    str_test.cpp
+    strip_path_and_extension_test.cpp
+    swap_endian_test.cpp
+    teehistorian_test.cpp
     test.cpp
     test.h
-    thread.cpp
-    time.cpp
-    timestamp.cpp
-    unix.cpp
-    uuid.cpp
+    thread_test.cpp
+    time_test.cpp
+    timestamp_test.cpp
+    unix_test.cpp
+    uuid_test.cpp
+    vmath_test.cpp
+    windows_test.cpp
   )
   set(TESTS_EXTRA
     src/engine/client/blocklist_driver.cpp
@@ -3211,6 +3269,8 @@ if(TARGET_OS STREQUAL "mac")
   set(CPACK_STRIP_FILES FALSE)
 elseif(TARGET_OS STREQUAL "windows" AND TARGET_CPU_ARCHITECTURE STREQUAL "arm64")
   set(CPACK_STRIP_FILES FALSE)
+elseif(TARGET_OS STREQUAL "emscripten")
+  set(CPACK_STRIP_FILES FALSE)
 else()
   set(CPACK_STRIP_FILES TRUE)
 endif()
@@ -3321,15 +3381,19 @@ list(APPEND CPACK_TARGETS ${TARGET_TOOLS})
 if(STEAMAPI_KIND STREQUAL SHARED)
   list(APPEND CPACK_TARGETS ${TARGET_STEAMAPI})
 endif()
-set(CPACK_DIRS
-  data
-  ${COPY_DIRS}
-)
+if(TARGET_OS STREQUAL "emscripten")
+  set(CPACK_DIRS)
+else()
+  set(CPACK_DIRS data)
+endif()
+list(APPEND CPACK_DIRS ${COPY_DIRS})
 set(CPACK_FILES
   license.txt
-  storage.cfg
   ${COPY_FILES}
 )
+if(NOT TARGET_OS STREQUAL "emscripten")
+  list(APPEND CPACK_FILES storage.cfg)
+endif()
 
 set(CPACK_GEN_FILES
   ${VULKAN_SHADER_FILE_LIST}
@@ -3337,7 +3401,7 @@ set(CPACK_GEN_FILES
 
 if(TARGET_OS STREQUAL "windows")
   list(APPEND CPACK_FILES other/config_directory.bat)
-else()
+elseif(NOT TARGET_OS STREQUAL "emscripten")
   list(APPEND CPACK_FILES other/config_directory.sh)
 endif()
 
@@ -3384,7 +3448,7 @@ else()
 endif()
 
 set(PACKAGE_TARGETS)
-if(CLIENT AND DMGBUILD)
+if(CLIENT AND DMGBUILD_FOUND)
   file(MAKE_DIRECTORY bundle/client/)
   file(MAKE_DIRECTORY bundle/server/)
   configure_file(other/bundle/client/Info.plist.in bundle/client/Info.plist)
@@ -3414,6 +3478,45 @@ if(CLIENT AND DMGBUILD)
     list(APPEND TARGET_TOOLS_FILES $<TARGET_FILE:${target}>)
   endforeach()
 
+  if(EXTERNAL_STEAM_API_DYLIB)
+    set(STEAM_API_DYLIB_FOR_PACKAGE "${EXTERNAL_STEAM_API_DYLIB}")
+  else()
+    set(STEAM_API_DYLIB_FOR_PACKAGE "${PROJECT_BINARY_DIR}/libsteam_api.dylib")
+  endif()
+
+  if(NOT MACOS_CODESIGN STREQUAL OFF)
+    set(CODESIGN_COMMANDS
+        COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/SDL2.framework
+        COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/libsteam_api.dylib
+        COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/discord_game_sdk.dylib
+        COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/libfreetype.6.dylib
+        COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/libpng16.16.dylib
+        COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/libavcodec.61.dylib
+        COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/libavformat.61.dylib
+        COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/libavutil.59.dylib
+        COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/libswresample.5.dylib
+        COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/libswscale.8.dylib
+    )
+    foreach(target ${TARGET_TOOLS})
+      list(APPEND CODESIGN_COMMANDS
+          COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/MacOS/${target}
+      )
+    endforeach()
+    list(APPEND CODESIGN_COMMANDS
+        COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/MacOS/${SERVER_EXECUTABLE}
+        COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/MacOS/${CLIENT_EXECUTABLE}
+        COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${SERVER_EXECUTABLE}.app/Contents/MacOS/${SERVER_EXECUTABLE}
+
+        COMMAND codesign --force --options runtime --timestamp --deep --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app
+        COMMAND codesign --force --options runtime --timestamp --deep --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${SERVER_EXECUTABLE}.app
+        # Verify signatures
+        COMMAND codesign --verify --deep --strict --verbose=2 "${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app"
+        COMMAND codesign --verify --deep --strict --verbose=2 "${DMG_TMPDIR}/${SERVER_EXECUTABLE}.app"
+    )
+  else()
+    set(CODESIGN_COMMANDS)
+  endif()
+
   add_custom_command(OUTPUT ${CPACK_PACKAGE_FILE_NAME}.dmg
     COMMAND ${CMAKE_COMMAND} -E remove_directory ${DMG_TMPDIR}
     ${DMG_MKDIR_COMMANDS}
@@ -3423,7 +3526,7 @@ if(CLIENT AND DMGBUILD)
     COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_SOURCE_DIR}/other/icons/${CLIENT_EXECUTABLE}.icns ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Resources/
     COMMAND ${CMAKE_COMMAND} -E copy bundle/client/Info.plist ${PROJECT_SOURCE_DIR}/other/bundle/client/PkgInfo ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:game-client> ${TARGET_TOOLS_FILES} ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/MacOS/
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${PROJECT_SOURCE_DIR}/ddnet-libs/sdl/${LIB_DIR}/SDL2.framework ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/SDL2.framework
+    COMMAND /bin/cp -a ${PROJECT_SOURCE_DIR}/ddnet-libs/sdl/${LIB_DIR}/SDL2.framework ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/
     COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_SOURCE_DIR}/ddnet-libs/discord/${LIB_DIR}/discord_game_sdk.dylib ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/
     COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_SOURCE_DIR}/ddnet-libs/freetype/${LIB_DIR}/libfreetype.6.dylib ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/
     COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_SOURCE_DIR}/ddnet-libs/png/${LIB_DIR}/libpng16.16.dylib ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/
@@ -3432,7 +3535,7 @@ if(CLIENT AND DMGBUILD)
     COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_SOURCE_DIR}/ddnet-libs/ffmpeg/${LIB_DIR}/libavutil.59.dylib ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/
     COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_SOURCE_DIR}/ddnet-libs/ffmpeg/${LIB_DIR}/libswresample.5.dylib ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/
     COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_SOURCE_DIR}/ddnet-libs/ffmpeg/${LIB_DIR}/libswscale.8.dylib ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/
-    COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_BINARY_DIR}/libsteam_api.dylib ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/
+    COMMAND ${CMAKE_COMMAND} -E copy ${STEAM_API_DYLIB_FOR_PACKAGE} ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/darwin_strip_rpath.py ${CMAKE_OTOOL} ${CMAKE_INSTALL_NAME_TOOL} ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/MacOS/${CLIENT_EXECUTABLE}
     COMMAND ${CMAKE_INSTALL_NAME_TOOL} -add_rpath @loader_path/../Frameworks ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/MacOS/${CLIENT_EXECUTABLE}
 
@@ -3443,6 +3546,8 @@ if(CLIENT AND DMGBUILD)
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:game-server> $<TARGET_FILE:game-server-launcher> ${DMG_TMPDIR}/${SERVER_EXECUTABLE}.app/Contents/MacOS/
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/darwin_strip_rpath.py ${CMAKE_OTOOL} ${CMAKE_INSTALL_NAME_TOOL} ${DMG_TMPDIR}/${SERVER_EXECUTABLE}.app/Contents/MacOS/${SERVER_EXECUTABLE}
     COMMAND ${CMAKE_COMMAND} -E copy ${DMG_TMPDIR}/${SERVER_EXECUTABLE}.app/Contents/MacOS/${SERVER_EXECUTABLE} ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/MacOS/${SERVER_EXECUTABLE}
+
+    ${CODESIGN_COMMANDS}
 
     # DMG
     COMMAND dmgbuild -s ${PROJECT_SOURCE_DIR}/other/dmgsettings.py -D client=${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app -D server=${DMG_TMPDIR}/${SERVER_EXECUTABLE}.app -D background=${PROJECT_SOURCE_DIR}/other/dmgbackground.png "${CPACK_PACKAGE_NAME} ${CPACK_PACKAGE_VERSION}" ${CPACK_PACKAGE_FILE_NAME}.dmg
@@ -3487,8 +3592,15 @@ foreach(ext zip tar.gz tar.xz)
     list(APPEND COPY_DIR_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy_directory ${PROJECT_SOURCE_DIR}/${dir} ${TMPDIR}/${dir})
   endforeach()
   foreach(target ${CPACK_TARGETS})
-    list(APPEND COPY_TARGET_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${target}> ${TMPDIR}/)
-    if(NOT TARGET_OS STREQUAL "mac" AND NOT (TARGET_OS STREQUAL "windows" AND TARGET_CPU_ARCHITECTURE STREQUAL "arm64"))
+    if(TARGET_OS STREQUAL "emscripten")
+      # The main target with Emscripten is the .html file, but we instead want the .data, .js and .wasm files and use our own index.html
+      list(APPEND COPY_TARGET_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_BINARY_DIR}/$<TARGET_FILE_BASE_NAME:game-client>.data ${TMPDIR}/)
+      list(APPEND COPY_TARGET_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_BINARY_DIR}/$<TARGET_FILE_BASE_NAME:game-client>.js ${TMPDIR}/)
+      list(APPEND COPY_TARGET_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_BINARY_DIR}/$<TARGET_FILE_BASE_NAME:game-client>.wasm ${TMPDIR}/)
+    else()
+      list(APPEND COPY_TARGET_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${target}> ${TMPDIR}/)
+    endif()
+    if(CPACK_STRIP_FILES)
       list(APPEND STRIP_TARGET_COMMANDS COMMAND strip -s ${TMPDIR}/$<TARGET_FILE_NAME:${target}>)
     endif()
   endforeach()
@@ -3628,6 +3740,7 @@ foreach(target ${TARGETS_OWN})
     # See https://learn.microsoft.com/en-us/windows/win32/winprog/using-the-windows-headers
     target_compile_definitions(${target} PRIVATE NOMINMAX) # windows.h shouldn't define min/max macros
     target_compile_definitions(${target} PRIVATE WIN32_LEAN_AND_MEAN) # windows.h shouldn't define the name IStorage
+    target_compile_definitions(${target} PRIVATE NOGDI) # wingdi.h shouldn't define the name ERROR
     # 0x0501 (Windows XP) is required for mingw to get getaddrinfo to work
     # 0x0600 (Windows Vista) is required to use RegGetValueW and RegDeleteTreeW
     target_compile_definitions(${target} PRIVATE NTDDI_VERSION=0x06000000) # Minimum OS version (new macro, since Vista)
@@ -3696,9 +3809,14 @@ foreach(target ${TARGETS_OWN})
   endif()
   if(TARGET_OS STREQUAL "android")
     if(ANDROID_PACKAGE_NAME)
-      target_compile_definitions(${target} PRIVATE ANDROID_PACKAGE_NAME=${ANDROID_PACKAGE_NAME})
+      target_compile_definitions(${target} PRIVATE ANDROID_PACKAGE_NAME="${ANDROID_PACKAGE_NAME}")
     else()
-      message(FATAL_ERROR "ANDROID_PACKAGE_NAME must define the package name when compiling for Android (using underscores instead of dots, e.g. org_example_app)")
+      message(FATAL_ERROR "ANDROID_PACKAGE_NAME must define the package name when compiling for Android (e.g. org.example.app)")
+    endif()
+    if(ANDROID_PACKAGE_NAME_JNI)
+      target_compile_definitions(${target} PRIVATE ANDROID_PACKAGE_NAME_JNI=${ANDROID_PACKAGE_NAME_JNI})
+    else()
+      message(FATAL_ERROR "ANDROID_PACKAGE_NAME_JNI must define the package name when compiling for Android (using underscores instead of dots, e.g. org_example_app)")
     endif()
   endif()
 endforeach()

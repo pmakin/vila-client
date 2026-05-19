@@ -1,7 +1,8 @@
 #ifndef ENGINE_CLIENT_GRAPHICS_THREADED_H
 #define ENGINE_CLIENT_GRAPHICS_THREADED_H
 
-#include <base/system.h>
+#include <base/dbg.h>
+#include <base/sphore.h>
 
 #include <engine/graphics.h>
 #include <engine/shared/config.h>
@@ -186,8 +187,6 @@ public:
 		unsigned m_Cmd;
 		SCommand *m_pNext;
 	};
-	SCommand *m_pCmdBufferHead;
-	SCommand *m_pCmdBufferTail;
 
 	struct SState
 	{
@@ -623,7 +622,7 @@ public:
 	}
 
 	const SCommand *Head() const { return m_pCmdBufferHead; }
-	SCommand *Head() { return m_pCmdBufferHead; } // NOLINT(readability-make-member-function-const)
+	SCommand *Head() { return m_pCmdBufferHead; }
 
 	void Reset()
 	{
@@ -639,6 +638,10 @@ public:
 	{
 		m_RenderCallCount += RenderCallCountToAdd;
 	}
+
+private:
+	SCommand *m_pCmdBufferHead;
+	SCommand *m_pCmdBufferTail;
 };
 
 enum EGraphicsBackendErrorCodes
@@ -687,9 +690,8 @@ public:
 	virtual const char *GetScreenName(int Screen) const = 0;
 
 	virtual void Minimize() = 0;
-	virtual void Maximize() = 0;
 	virtual void SetWindowParams(int FullscreenMode, bool IsBorderless) = 0;
-	virtual bool SetWindowScreen(int Index) = 0;
+	virtual bool SetWindowScreen(int Index, bool MoveToCenter) = 0;
 	virtual bool UpdateDisplayMode(int Index) = 0;
 	virtual int GetWindowScreen() = 0;
 	virtual int WindowActive() = 0;
@@ -762,7 +764,6 @@ class CGraphics_Threaded : public IEngineGraphics
 
 	//
 	class IStorage *m_pStorage;
-	class IConsole *m_pConsole;
 	class IEngine *m_pEngine;
 
 	int m_CurIndex;
@@ -1204,11 +1205,10 @@ public:
 	const char *GetScreenName(int Screen) const override;
 
 	void Minimize() override;
-	void Maximize() override;
 	void WarnPngliteIncompatibleImages(bool Warn) override;
 	void SetWindowParams(int FullscreenMode, bool IsBorderless) override;
-	bool SetWindowScreen(int Index) override;
-	bool SwitchWindowScreen(int Index) override;
+	bool SetWindowScreen(int Index, bool MoveToCenter) override;
+	bool SwitchWindowScreen(int Index, bool MoveToCenter) override;
 	void Move(int x, int y) override;
 	bool Resize(int w, int h, int RefreshRate) override;
 	void ResizeToScreen() override;

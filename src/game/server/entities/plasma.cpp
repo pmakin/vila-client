@@ -71,7 +71,7 @@ bool CPlasma::HitCharacter(CCharacter *pTarget)
 		return false;
 	}
 
-	m_Freeze ? pHitPlayer->Freeze() : pHitPlayer->UnFreeze();
+	m_Freeze ? pHitPlayer->Freeze() : pHitPlayer->Unfreeze();
 	if(m_Explosive)
 	{
 		// Plasma Turrets are very precise weapons only one tee gets speed from it,
@@ -128,5 +128,5 @@ void CPlasma::Snap(int SnappingClient)
 
 void CPlasma::SwapClients(int Client1, int Client2)
 {
-	m_ForClientId = m_ForClientId == Client1 ? Client2 : m_ForClientId == Client2 ? Client1 : m_ForClientId;
+	m_ForClientId = m_ForClientId == Client1 ? Client2 : (m_ForClientId == Client2 ? Client1 : m_ForClientId);
 }

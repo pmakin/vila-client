@@ -1,8 +1,32 @@
+/* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
+/* If you are missing that file, acquire a complete release at teeworlds.com.                */
+
 #ifndef BASE_STR_H
 #define BASE_STR_H
 
+#include <cinttypes>
+#include <cstdarg>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+
+/**
+ * String related functions.
+ *
+ * @defgroup Strings Strings
+ */
+
+#ifdef __MINGW32__
+#undef PRId64
+#undef PRIu64
+#undef PRIX64
+#define PRId64 "I64d"
+#define PRIu64 "I64u"
+#define PRIX64 "I64X"
+#define PRIzu "Iu"
+#else
+#define PRIzu "zu"
+#endif
 
 /**
  * Copies a string to another.
@@ -94,6 +118,68 @@ void str_truncate(char *dst, int dst_size, const char *src, int truncation_len);
  * @return Length of string in bytes excluding the null-termination.
  */
 int str_length(const char *str);
+
+/**
+ * Performs printf formatting into a buffer.
+ *
+ * @ingroup Strings
+ *
+ * @param buffer Pointer to the buffer to receive the formatted string.
+ * @param buffer_size Size of the buffer.
+ * @param format printf formatting string.
+ * @param args The variable argument list.
+ *
+ * @return Length of written string, even if it has been truncated.
+ *
+ * @remark See the C manual for syntax for the printf formatting string.
+ * @remark The strings are treated as null-terminated strings.
+ * @remark Guarantees that buffer string will contain null-termination.
+ */
+[[gnu::format(printf, 3, 0)]] int str_format_v(char *buffer, int buffer_size, const char *format, va_list args);
+
+/**
+ * Performs printf formatting into a buffer.
+ *
+ * @ingroup Strings
+ *
+ * @param buffer Pointer to the buffer to receive the formatted string.
+ * @param buffer_size Size of the buffer.
+ * @param format printf formatting string.
+ * @param ... Parameters for the formatting.
+ *
+ * @return Length of written string, even if it has been truncated.
+ *
+ * @remark See the C manual for syntax for the printf formatting string.
+ * @remark The strings are treated as null-terminated strings.
+ * @remark Guarantees that buffer string will contain null-termination.
+ */
+[[gnu::format(printf, 3, 4)]] int str_format(char *buffer, int buffer_size, const char *format, ...);
+
+#if !defined(CONF_DEBUG)
+int str_format_int(char *buffer, size_t buffer_size, int value);
+
+template<typename... Args>
+int str_format_opt(char *buffer, int buffer_size, const char *format, Args... args)
+{
+	static_assert(sizeof...(args) > 0, "Use str_copy instead of str_format without format arguments");
+	return str_format(buffer, buffer_size, format, args...);
+}
+
+template<>
+inline int str_format_opt(char *buffer, int buffer_size, const char *format, int val) // NOLINT(readability-inconsistent-declaration-parameter-name)
+{
+	if(strcmp(format, "%d") == 0)
+	{
+		return str_format_int(buffer, buffer_size, val);
+	}
+	else
+	{
+		return str_format(buffer, buffer_size, format, val);
+	}
+}
+
+#define str_format str_format_opt
+#endif
 
 char str_uppercase(char c);
 
@@ -442,7 +528,7 @@ const char *str_next_token(const char *str, const char *delim, char *buffer, int
  * @return `1` - Item is in list.
  * @return `0` - Item isn't in list.
  *
-* @remark The strings are treated as null-terminated strings.
+ * @remark The strings are treated as null-terminated strings.
  */
 int str_in_list(const char *list, const char *delim, const char *needle);
 
@@ -713,5 +799,228 @@ int str_utf8_isstart(char c);
  * @remark The strings are treated as null-terminated.
  */
 int str_utf8_rewind(const char *str, int cursor);
+
+/**
+ * Finds a UTF-8 string inside another UTF-8 string case insensitively.
+ *
+ * @ingroup Strings
+ *
+ * @param haystack String to search in.
+ * @param needle String to search for.
+ * @param end A pointer that will be set to a pointer into haystack directly behind the
+ *            last character where the needle was found. Will be set to `nullptr `if needle
+ *            could not be found. Optional parameter.
+ *
+ * @return A pointer into haystack where the needle was found.
+ * @return Returns `nullptr` if needle could not be found.
+ *
+ * @remark The strings are treated as null-terminated strings.
+ */
+const char *str_utf8_find_nocase(const char *haystack, const char *needle, const char **end = nullptr);
+
+/**
+ * Compares two UTF-8 strings case insensitively.
+ *
+ * @ingroup Strings
+ *
+ * @param a String to compare.
+ * @param b String to compare.
+ *
+ * @return `< 0` if string a is less than string b.
+ * @return `0` if string a is equal to string b.
+ * @return `> 0` if string a is greater than string b.
+ */
+int str_utf8_comp_nocase(const char *a, const char *b);
+
+/**
+ * Compares up to `num` bytes of two UTF-8 strings case insensitively.
+ *
+ * @ingroup Strings
+ *
+ * @param a String to compare.
+ * @param b String to compare.
+ * @param num Maximum bytes to compare.
+ *
+ * @return `< 0` if string a is less than string b.
+ * @return `0` if string a is equal to string b.
+ * @return `> 0` if string a is greater than string b.
+ */
+int str_utf8_comp_nocase_num(const char *a, const char *b, int num);
+
+/**
+ * Skips leading characters that render as spaces.
+ *
+ * @ingroup Strings
+ *
+ * @param str Input string.
+ *
+ * @return Pointer to the first non-whitespace character found within the string.
+ * @remark The strings are treated as null-terminated strings.
+ */
+const char *str_utf8_skip_whitespaces(const char *str);
+
+/**
+ * Moves a cursor forwards in an UTF-8 string.
+ *
+ * @ingroup Strings
+ *
+ * @param str UTF-8 string.
+ * @param cursor Position in the string.
+ *
+ * @return New cursor position.
+ *
+ * @remark Won't move the cursor beyond the null-termination marker.
+ * @remark The strings are treated as null-terminated.
+ */
+int str_utf8_forward(const char *str, int cursor);
+
+/**
+ * Checks if a strings contains just valid UTF-8 characters.
+ *
+ * @ingroup Strings
+ *
+ * @param str Pointer to a possible UTF-8 string.
+ *
+ * @return `0` if invalid characters were found, `1` if only valid characters were found.
+ *
+ * @remark The string is treated as null-terminated UTF-8 string.
+ */
+int str_utf8_check(const char *str);
+
+/**
+ * Copies a number of UTF-8 characters from one string to another.
+ *
+ * @ingroup Strings
+ *
+ * @param dst Pointer to a buffer that shall receive the string.
+ * @param src String to be copied.
+ * @param dst_size Size of the buffer dst.
+ * @param num Maximum number of UTF-8 characters to be copied.
+ *
+ * @remark The strings are treated as null-terminated strings.
+ * @remark Guarantees that dst string will contain null-termination.
+ */
+void str_utf8_copy_num(char *dst, const char *src, int dst_size, int num);
+
+/**
+ * Determines the byte size and UTF-8 character count of a UTF-8 string.
+ *
+ * @ingroup Strings
+ *
+ * @param str Pointer to the string.
+ * @param max_size Maximum number of bytes to count.
+ * @param max_count Maximum number of UTF-8 characters to count.
+ * @param size Pointer to store size (number of non. Zero bytes) of the string.
+ * @param count Pointer to store count of UTF-8 characters of the string.
+ *
+ * @remark The string is treated as null-terminated UTF-8 string.
+ * @remark It's the user's responsibility to make sure the bounds are aligned.
+ */
+void str_utf8_stats(const char *str, size_t max_size, size_t max_count, size_t *size, size_t *count);
+
+/**
+ * Converts a byte offset of a UTF-8 string to the UTF-8 character offset.
+ *
+ * @ingroup Strings
+ *
+ * @param str Pointer to the string.
+ * @param byte_offset Offset in bytes.
+ *
+ * @return Offset in UTF-8 characters. Clamped to the maximum length of the string in UTF-8 characters.
+ *
+ * @remark The string is treated as a null-terminated UTF-8 string.
+ * @remark It's the user's responsibility to make sure the bounds are aligned.
+ */
+size_t str_utf8_offset_bytes_to_chars(const char *str, size_t byte_offset);
+
+/**
+ * Converts a UTF-8 character offset of a UTF-8 string to the byte offset.
+ *
+ * @ingroup Strings
+ *
+ * @param str Pointer to the string.
+ * @param char_offset Offset in UTF-8 characters.
+ *
+ * @return Offset in bytes. Clamped to the maximum length of the string in bytes.
+ *
+ * @remark The string is treated as a null-terminated UTF-8 string.
+ * @remark It's the user's responsibility to make sure the bounds are aligned.
+ */
+size_t str_utf8_offset_chars_to_bytes(const char *str, size_t char_offset);
+
+/**
+ * Computes the edit distance between two strings.
+ *
+ * @param a First string for the edit distance.
+ * @param b Second string for the edit distance.
+ *
+ * @return The edit distance between the both strings.
+ *
+ * @remark The strings are treated as null-terminated strings.
+ */
+int str_utf8_dist(const char *a, const char *b);
+
+/**
+ * Computes the edit distance between two strings, allows buffers
+ * to be passed in.
+ *
+ * @ingroup Strings
+ *
+ * @param a First string for the edit distance.
+ * @param b Second string for the edit distance.
+ * @param buf Buffer for the function.
+ * @param buf_len Length of the buffer, must be at least as long as
+ *                twice the length of both strings combined plus two.
+ *
+ * @return The edit distance between the both strings.
+ *
+ * @remark The strings are treated as null-terminated strings.
+ */
+int str_utf8_dist_buffer(const char *a, const char *b, int *buf, int buf_len);
+
+/**
+ * Computes the edit distance between two strings, allows buffers
+ * to be passed in.
+ *
+ * @ingroup Strings
+ *
+ * @param a First string for the edit distance.
+ * @param a_len Length of the first string.
+ * @param b Second string for the edit distance.
+ * @param b_len Length of the second string.
+ * @param buf Buffer for the function.
+ * @param buf_len Length of the buffer, must be at least as long as
+ *                the length of both strings combined plus two.
+ *
+ * @return The edit distance between the both strings.
+ *
+ * @remark The strings are treated as null-terminated strings.
+ */
+int str_utf32_dist_buffer(const int *a, int a_len, const int *b, int b_len, int *buf, int buf_len);
+
+int str_utf8_to_skeleton(const char *str, int *buf, int buf_len);
+
+/**
+ * Checks if two strings only differ by confusable characters.
+ *
+ * @ingroup Strings
+ *
+ * @param str1 String to compare.
+ * @param str2 String to compare.
+ *
+ * @return `0` if the strings are confusables.
+ */
+int str_utf8_comp_confusable(const char *str1, const char *str2);
+
+/**
+ * Converts the given Unicode codepoint to lowercase (locale insensitive).
+ *
+ * @ingroup Strings
+ *
+ * @param code Unicode codepoint to convert.
+ *
+ * @return Lowercase codepoint, or the original codepoint if there is no lowercase version.
+ */
+int str_utf8_tolower_codepoint(int code);
 
 #endif

@@ -19,7 +19,7 @@
 CMapImages::CMapImages()
 {
 	m_Count = 0;
-	mem_zero(m_aEntitiesIsLoaded, sizeof(m_aEntitiesIsLoaded));
+	std::fill(std::begin(m_aEntitiesIsLoaded), std::end(m_aEntitiesIsLoaded), false);
 	m_SpeedupArrowIsLoaded = false;
 
 	str_copy(m_aEntitiesPath, "editor/entities_clear");
@@ -139,7 +139,9 @@ void CMapImages::OnMapLoadImpl(class CLayers *pLayers, IMap *pMap)
 					!str_comp(pName, "grass_doodads") ||
 					!str_comp(pName, "grass_main") ||
 					!str_comp(pName, "winter_main") ||
-					!str_comp(pName, "generic_unhookable");
+					!str_comp(pName, "generic_shadows") ||
+					!str_comp(pName, "generic_unhookable") ||
+					!str_comp(pName, "easter");
 			}
 			str_format(aPath, sizeof(aPath), "mapres/%s%s.png", pName, Translated ? "_0.7" : "");
 			m_aTextures[i] = Graphics()->LoadTexture(aPath, IStorage::TYPE_ALL, LoadFlag);
@@ -177,9 +179,7 @@ void CMapImages::OnMapLoadImpl(class CLayers *pLayers, IMap *pMap)
 
 void CMapImages::OnMapLoad()
 {
-	IMap *pMap = Kernel()->RequestInterface<IMap>();
-	CLayers *pLayers = GameClient()->Layers();
-	OnMapLoadImpl(pLayers, pMap);
+	OnMapLoadImpl(GameClient()->Layers(), GameClient()->Map());
 }
 
 void CMapImages::LoadBackground(class CLayers *pLayers, class IMap *pMap)

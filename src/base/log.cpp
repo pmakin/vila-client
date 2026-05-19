@@ -1,6 +1,8 @@
+#include "aio.h"
 #include "color.h"
 #include "logger.h"
 #include "system.h"
+#include "windows.h"
 
 #include <atomic>
 #include <cstdio>
@@ -27,7 +29,7 @@ void log_set_global_logger(ILogger *logger)
 	ILogger *null = nullptr;
 	if(!global_logger.compare_exchange_strong(null, logger, std::memory_order_acq_rel))
 	{
-		dbg_assert(false, "global logger has already been set and can only be set once");
+		dbg_assert_failed("global logger has already been set and can only be set once");
 	}
 	atexit(log_global_logger_finish);
 }
@@ -98,7 +100,6 @@ void log_set_scope_logger(ILogger *logger)
 	str_copy(Msg.m_aSystem, sys);
 	Msg.m_SystemLength = str_length(Msg.m_aSystem);
 
-	// TODO: Add level?
 	str_format(Msg.m_aLine, sizeof(Msg.m_aLine), "%s %c %s: ", Msg.m_aTimestamp, "EWIDT"[level], Msg.m_aSystem);
 	Msg.m_LineMessageOffset = str_length(Msg.m_aLine);
 
@@ -160,7 +161,10 @@ public:
 		case LEVEL_WARN: AndroidLevel = ANDROID_LOG_WARN; break;
 		case LEVEL_ERROR: AndroidLevel = ANDROID_LOG_ERROR; break;
 		}
-		__android_log_write(AndroidLevel, pMessage->m_aSystem, pMessage->Message());
+		char aTag[64];
+		str_copy(aTag, ANDROID_PACKAGE_NAME "/");
+		str_append(aTag, pMessage->m_aSystem);
+		__android_log_write(AndroidLevel, aTag, pMessage->Message());
 	}
 };
 std::unique_ptr<ILogger> log_logger_android()
@@ -446,8 +450,7 @@ std::unique_ptr<ILogger> log_logger_stdout()
 	}
 	else
 	{
-		dbg_assert(false, "GetFileType failure");
-		dbg_break();
+		dbg_assert_failed("GetFileType failure");
 	}
 #endif
 }
@@ -502,7 +505,7 @@ void CFutureLogger::Set(std::shared_ptr<ILogger> pLogger)
 	std::shared_ptr<ILogger> pNullLogger;
 	if(!std::atomic_compare_exchange_strong_explicit(&m_pLogger, &pNullLogger, pLogger, std::memory_order_acq_rel, std::memory_order_acq_rel))
 	{
-		dbg_assert(false, "future logger has already been set and can only be set once");
+		dbg_assert_failed("future logger has already been set and can only be set once");
 	}
 	m_pLogger = std::move(pLogger);
 

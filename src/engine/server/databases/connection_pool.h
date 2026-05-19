@@ -1,7 +1,7 @@
 #ifndef ENGINE_SERVER_DATABASES_CONNECTION_POOL_H
 #define ENGINE_SERVER_DATABASES_CONNECTION_POOL_H
 
-#include <base/tl/threading.h>
+#include <base/sphore.h>
 
 #include <atomic>
 #include <memory>
@@ -79,7 +79,7 @@ public:
 
 	void Print(IConsole *pConsole, Mode DatabaseMode);
 
-	void RegisterSqliteDatabase(Mode DatabaseMode, const char FileName[64]);
+	void RegisterSqliteDatabase(Mode DatabaseMode, const char aFilename[64]);
 	void RegisterMysqlDatabase(Mode DatabaseMode, const CMysqlConfig *pMysqlConfig);
 
 	void Execute(

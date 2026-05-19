@@ -5,8 +5,11 @@
 #include "compression.h"
 #include "uuid_manager.h"
 
+#include <base/bytes.h>
+#include <base/dbg.h>
 #include <base/math.h>
-#include <base/system.h>
+#include <base/mem.h>
+#include <base/str.h>
 
 #include <generated/protocol7.h>
 #include <generated/protocolglue.h>
@@ -256,10 +259,10 @@ void CSnapshotDelta::UndiffItem(const int *pPast, const int *pDiff, int *pOut, i
 
 CSnapshotDelta::CSnapshotDelta()
 {
-	mem_zero(m_aItemSizes, sizeof(m_aItemSizes));
-	mem_zero(m_aItemSizes7, sizeof(m_aItemSizes7));
-	mem_zero(m_aSnapshotDataRate, sizeof(m_aSnapshotDataRate));
-	mem_zero(m_aSnapshotDataUpdates, sizeof(m_aSnapshotDataUpdates));
+	std::fill(std::begin(m_aItemSizes), std::end(m_aItemSizes), 0);
+	std::fill(std::begin(m_aItemSizes7), std::end(m_aItemSizes7), 0);
+	std::fill(std::begin(m_aSnapshotDataRate), std::end(m_aSnapshotDataRate), 0);
+	std::fill(std::begin(m_aSnapshotDataUpdates), std::end(m_aSnapshotDataUpdates), 0);
 	mem_zero(&m_Empty, sizeof(m_Empty));
 }
 
@@ -583,9 +586,20 @@ int CSnapshotDelta::UnpackDelta(const CSnapshot *pFrom, CSnapshot *pTo, const vo
 		const int Key = (Type << 16) | Id;
 
 		// create the item if needed
-		int *pNewData = Builder.GetItemData(Key);
-		if(!pNewData)
+		std::optional<int> ExistingIndex = Builder.FindItemIndexByKey(Key);
+		int *pNewData;
+		if(ExistingIndex)
+		{
+			if(ItemSize != Builder.GetItemSize(ExistingIndex.value()))
+			{
+				return -206;
+			}
+			pNewData = Builder.GetItemData(ExistingIndex.value());
+		}
+		else
+		{
 			pNewData = (int *)Builder.NewItem(Type, Id, ItemSize);
+		}
 
 		if(!pNewData)
 			return -302;
@@ -593,6 +607,10 @@ int CSnapshotDelta::UnpackDelta(const CSnapshot *pFrom, CSnapshot *pTo, const vo
 		const int FromIndex = pFrom->GetItemIndex(Key);
 		if(FromIndex != -1)
 		{
+			if(pFrom->GetItemSize(FromIndex) != ItemSize)
+			{
+				return -207;
+			}
 			// we got an update so we need to apply the diff
 			UndiffItem(pFrom->GetItem(FromIndex)->Data(), pData, pNewData, ItemSize / sizeof(int32_t), &m_aSnapshotDataRate[Type]);
 		}
@@ -717,15 +735,13 @@ int CSnapshotStorage::Get(int Tick, int64_t *pTagtime, const CSnapshot **ppData,
 }
 
 // CSnapshotBuilder
-CSnapshotBuilder::CSnapshotBuilder()
-{
-	m_NumExtendedItemTypes = 0;
-}
-
 void CSnapshotBuilder::Init(bool Sixup)
 {
+	dbg_assert(!m_Building, "Snapshot builder is already building snapshot. Call `Finish` for each call to `Init`.");
+
 	m_DataSize = 0;
 	m_NumItems = 0;
+	m_Building = true;
 	m_Sixup = Sixup;
 
 	for(int i = 0; i < m_NumExtendedItemTypes; i++)
@@ -736,24 +752,41 @@ void CSnapshotBuilder::Init(bool Sixup)
 
 CSnapshotItem *CSnapshotBuilder::GetItem(int Index)
 {
+	dbg_assert(0 <= Index && Index < m_NumItems, "invalid item index");
 	return (CSnapshotItem *)&(m_aData[m_aOffsets[Index]]);
 }
 
-int *CSnapshotBuilder::GetItemData(int Key)
+int CSnapshotBuilder::GetItemSize(int Index) const
+{
+	dbg_assert(0 <= Index && Index < m_NumItems, "invalid item index");
+	int Start = m_aOffsets[Index];
+	int End = Index + 1 < m_NumItems ? m_aOffsets[Index + 1] : m_DataSize;
+	return (End - Start) - sizeof(CSnapshotItem);
+}
+
+int *CSnapshotBuilder::GetItemData(int Index)
+{
+	return GetItem(Index)->Data();
+}
+
+std::optional<int> CSnapshotBuilder::FindItemIndexByKey(int Key)
 {
 	for(int i = 0; i < m_NumItems; i++)
 	{
 		CSnapshotItem *pItem = GetItem(i);
 		if(pItem->Key() == Key)
 		{
-			return pItem->Data();
+			return i;
 		}
 	}
-	return nullptr;
+	return std::nullopt;
 }
 
 int CSnapshotBuilder::Finish(void *pSnapData)
 {
+	dbg_assert(m_Building, "Snapshot builder is not building snapshot. Call `Finish` after `Init`.");
+	m_Building = false;
+
 	// flatten and make the snapshot
 	dbg_assert(m_NumItems <= CSnapshot::MAX_ITEMS, "Too many snap items");
 	CSnapshot *pSnap = (CSnapshot *)pSnapData;
@@ -773,7 +806,9 @@ int CSnapshotBuilder::GetTypeFromIndex(int Index) const
 
 bool CSnapshotBuilder::AddExtendedItemType(int Index)
 {
-	dbg_assert(0 <= Index && Index < m_NumExtendedItemTypes, "index out of range");
+	dbg_assert(m_Building, "Snapshot builder is not building snapshot. Call `AddExtendedItemType` between `Init` and `Finish`.");
+	dbg_assert(0 <= Index && Index < m_NumExtendedItemTypes, "Index out of range: %d", Index);
+
 	int *pUuidItem = static_cast<int *>(NewItem(0, GetTypeFromIndex(Index), sizeof(CUuid))); // NETOBJTYPE_EX
 	if(pUuidItem == nullptr)
 	{
@@ -812,10 +847,11 @@ int CSnapshotBuilder::GetExtendedItemTypeIndex(int TypeId)
 
 void *CSnapshotBuilder::NewItem(int Type, int Id, int Size)
 {
-	if(Id == -1)
-	{
-		return nullptr;
-	}
+	dbg_assert(m_Building, "Snapshot builder is not building snapshot. Call `NewItem` between `Init` and `Finish`.");
+	const bool Extended = Type >= OFFSET_UUID;
+	dbg_assert((Type >= 0 && Type <= CSnapshot::MAX_TYPE) || Extended || (m_Sixup && Type >= -CSnapshot::MAX_TYPE && Type < 0), "Invalid snap item Type: %d", Type);
+	dbg_assert(Id >= 0 && Id <= CSnapshot::MAX_ID, "Invalid snap item Id: %d", Id);
+	dbg_assert(Size >= 0 && (size_t)Size <= CSnapshot::MAX_SIZE - sizeof(CSnapshot) - sizeof(CSnapshotItem) - sizeof(int), "Invalid snap item Size: %d", Size);
 
 	if(m_NumItems >= CSnapshot::MAX_ITEMS)
 	{
@@ -829,7 +865,6 @@ void *CSnapshotBuilder::NewItem(int Type, int Id, int Size)
 		return nullptr;
 	}
 
-	const bool Extended = Type >= OFFSET_UUID;
 	if(Extended)
 	{
 		const int ExtendedItemTypeIndex = GetExtendedItemTypeIndex(Type);

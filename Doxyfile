@@ -466,7 +466,7 @@ LOOKUP_CACHE_SIZE      = 0
 # than 0 to get more control over the balance between CPU load and processing
 # speed. At this moment only the input processing can be done using multiple
 # threads. Since this is still an experimental feature the default is set to 1,
-# which efficively disables parallel processing. Please report any issues you
+# which effectively disables parallel processing. Please report any issues you
 # encounter. Generating dot graphs in parallel is controlled by the
 # DOT_NUM_THREADS setting.
 # Minimum value: 0, maximum value: 32, default value: 1.
@@ -954,7 +954,9 @@ RECURSIVE              = YES
 # Note that relative paths are relative to the directory from which doxygen is
 # run.
 
-EXCLUDE                = src/engine/external
+EXCLUDE                = src/engine/external \
+                         src/masterping/target \
+                         src/mastersrv/target
 
 # The EXCLUDE_SYMLINKS tag can be used to select whether or not files or
 # directories that are symbolic links (a Unix file system feature) are excluded
